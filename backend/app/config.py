@@ -7,9 +7,15 @@ ENV_PATH = ROOT_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    openai_api_key: str
+    llm_provider: str = "openai"  # "openai" or "gemini"
+
+    openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
+
+    gemini_api_key: str = ""
+    gemini_chat_model: str = "gemini-3.6-flash"
+    gemini_embedding_model: str = "gemini-embedding-001"
 
     chroma_persist_dir: str = str(ROOT_DIR / "backend" / "chroma_data")
     chroma_collection_name: str = "documents"

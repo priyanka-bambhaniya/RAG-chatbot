@@ -3,6 +3,8 @@ from pathlib import Path
 
 import chromadb
 from docx import Document as DocxDocument
+from google import genai
+from google.genai import types as genai_types
 from openai import OpenAI
 from pypdf import PdfReader
 
@@ -55,20 +57,42 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 class RAGPipeline:
     def __init__(self) -> None:
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        self.provider = settings.llm_provider.lower()
+        if self.provider == "gemini":
+            if not settings.gemini_api_key:
+                raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
+            self.genai_client = genai.Client(api_key=settings.gemini_api_key)
+        elif self.provider == "openai":
+            if not settings.openai_api_key:
+                raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+            self.openai_client = OpenAI(api_key=settings.openai_api_key)
+        else:
+            raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'")
+
         self.chroma_client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
         self.collection = self.chroma_client.get_or_create_collection(
             name=settings.chroma_collection_name
         )
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        response = self.client.embeddings.create(
+        if self.provider == "gemini":
+            embeddings: list[list[float]] = []
+            batch_size = 100  # Gemini's embed_content caps requests at 100 per batch
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                response = self.genai_client.models.embed_content(
+                    model=settings.gemini_embedding_model, contents=batch
+                )
+                embeddings.extend(embedding.values for embedding in response.embeddings)
+            return embeddings
+        response = self.openai_client.embeddings.create(
             model=settings.openai_embedding_model, input=texts
         )
         return [item.embedding for item in response.data]
 
     def ingest_file(self, file_path: Path, source_name: str | None = None) -> int:
         source_name = source_name or file_path.name
+        self.collection.delete(where={"source": source_name})
         text = extract_text(file_path)
         chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
         if not chunks:
@@ -107,14 +131,21 @@ class RAGPipeline:
                 f"[Source: {c['source']}]\n{c['text']}" for c in context_chunks
             )
 
-        response = self.client.chat.completions.create(
+        user_content = f"Context:\n{context_block}\n\nQuestion: {query}"
+
+        if self.provider == "gemini":
+            response = self.genai_client.models.generate_content(
+                model=settings.gemini_chat_model,
+                contents=user_content,
+                config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+            )
+            return response.text or ""
+
+        response = self.openai_client.chat.completions.create(
             model=settings.openai_chat_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Context:\n{context_block}\n\nQuestion: {query}",
-                },
+                {"role": "user", "content": user_content},
             ],
         )
         return response.choices[0].message.content or ""
