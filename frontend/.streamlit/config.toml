@@ -1,2 +1,6 @@
 [client]
 toolbarMode = "viewer"
+
+[server]
+# Max upload size per file, in MB (Streamlit default is 200)
+maxUploadSize = 1024

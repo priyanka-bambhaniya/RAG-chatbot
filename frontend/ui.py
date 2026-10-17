@@ -34,8 +34,13 @@ with st.sidebar:
             }
             with st.spinner(f"Ingesting {uploaded_file.name}..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/ingest", files=files, timeout=120)
-                    response.raise_for_status()
+                    response = requests.post(f"{BACKEND_URL}/ingest", files=files, timeout=600)
+                    if not response.ok:
+                        detail = response.json().get("detail", response.text) if response.headers.get(
+                            "content-type", ""
+                        ).startswith("application/json") else response.text
+                        st.error(f"Failed to ingest {uploaded_file.name}: {detail}")
+                        continue
                     data = response.json()
                     st.success(f"{data['filename']}: {data['chunks_ingested']} chunks added")
                 except requests.RequestException as exc:

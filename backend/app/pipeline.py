@@ -1,9 +1,12 @@
+import re
+import time
 import uuid
 from pathlib import Path
 
 import chromadb
 from docx import Document as DocxDocument
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from openai import OpenAI
 from pypdf import PdfReader
@@ -77,18 +80,31 @@ class RAGPipeline:
     def _embed(self, texts: list[str]) -> list[list[float]]:
         if self.provider == "gemini":
             embeddings: list[list[float]] = []
-            batch_size = 100  # Gemini's embed_content caps requests at 100 per batch
+            # Gemini caps embed_content at 100 items per request; smaller batches stay under per-minute quota
+            batch_size = min(settings.embed_batch_size, 100)
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
-                response = self.genai_client.models.embed_content(
-                    model=settings.gemini_embedding_model, contents=batch
-                )
+                response = self._gemini_embed_with_retry(batch)
                 embeddings.extend(embedding.values for embedding in response.embeddings)
             return embeddings
         response = self.openai_client.embeddings.create(
             model=settings.openai_embedding_model, input=texts
         )
         return [item.embedding for item in response.data]
+
+    def _gemini_embed_with_retry(self, batch: list[str]):
+        for attempt in range(settings.embed_max_retries + 1):
+            try:
+                return self.genai_client.models.embed_content(
+                    model=settings.gemini_embedding_model, contents=batch
+                )
+            except genai_errors.ClientError as exc:
+                if exc.code != 429 or attempt == settings.embed_max_retries:
+                    raise
+                # Honor the server's suggested retryDelay (e.g. "23s"), else back off exponentially
+                match = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", str(exc))
+                delay = float(match.group(1)) + 1 if match else min(2 ** attempt * 5, 60)
+                time.sleep(delay)
 
     def ingest_file(self, file_path: Path, source_name: str | None = None) -> int:
         source_name = source_name or file_path.name

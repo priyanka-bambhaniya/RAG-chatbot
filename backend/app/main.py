@@ -45,6 +45,9 @@ async def ingest(file: UploadFile) -> IngestResponse:
 
     try:
         chunk_count = pipeline.ingest_file(tmp_path, source_name=file.filename)
+    except Exception as exc:
+        # Surface the real cause (e.g. embedding quota exhausted) instead of a bare 500
+        raise HTTPException(status_code=502, detail=f"Ingestion failed: {exc}") from exc
     finally:
         tmp_path.unlink(missing_ok=True)
 

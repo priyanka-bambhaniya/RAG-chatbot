@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     retrieval_top_k: int = 4
 
+    # Gemini free tier rate-limits embeddings per minute; keep batches small and retry on 429
+    embed_batch_size: int = 50
+    embed_max_retries: int = 6
+
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
