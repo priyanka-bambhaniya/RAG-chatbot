@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.pipeline import SUPPORTED_EXTENSIONS, pipeline
@@ -44,7 +45,11 @@ async def ingest(file: UploadFile) -> IngestResponse:
         tmp_path = Path(tmp.name)
 
     try:
-        chunk_count = pipeline.ingest_file(tmp_path, source_name=file.filename)
+        # Ingestion blocks (PDF parsing, embedding calls, retry sleeps); run it off the event loop
+        # so the server keeps answering other requests meanwhile
+        chunk_count = await run_in_threadpool(
+            pipeline.ingest_file, tmp_path, source_name=file.filename
+        )
     except Exception as exc:
         # Surface the real cause (e.g. embedding quota exhausted) instead of a bare 500
         raise HTTPException(status_code=502, detail=f"Ingestion failed: {exc}") from exc

@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 import uuid
@@ -20,6 +21,9 @@ SYSTEM_PROMPT = (
 )
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".docx"}
+
+# Use uvicorn's logger so progress lines show up in the server console
+logger = logging.getLogger("uvicorn.error")
 
 
 def extract_text(file_path: Path) -> str:
@@ -72,7 +76,10 @@ class RAGPipeline:
         else:
             raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'")
 
-        self.chroma_client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
+        self.chroma_client = chromadb.PersistentClient(
+            path=settings.chroma_persist_dir,
+            settings=chromadb.config.Settings(anonymized_telemetry=False),
+        )
         self.collection = self.chroma_client.get_or_create_collection(
             name=settings.chroma_collection_name
         )
@@ -86,6 +93,7 @@ class RAGPipeline:
                 batch = texts[i : i + batch_size]
                 response = self._gemini_embed_with_retry(batch)
                 embeddings.extend(embedding.values for embedding in response.embeddings)
+                logger.info("Embedded %d/%d chunks", len(embeddings), len(texts))
             return embeddings
         response = self.openai_client.embeddings.create(
             model=settings.openai_embedding_model, input=texts
@@ -104,6 +112,13 @@ class RAGPipeline:
                 # Honor the server's suggested retryDelay (e.g. "23s"), else back off exponentially
                 match = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", str(exc))
                 delay = float(match.group(1)) + 1 if match else min(2 ** attempt * 5, 60)
+                if delay > settings.embed_max_retry_wait:
+                    # Daily quota exhausted (Gemini asks to wait hours); fail now with a clear reason
+                    raise RuntimeError(
+                        f"Gemini embedding quota exhausted; it resets in about {delay / 3600:.1f}h. "
+                        "Wait for the reset, use another API key, or set LLM_PROVIDER=openai."
+                    ) from exc
+                logger.warning("Gemini rate limit hit; retrying in %.0fs", delay)
                 time.sleep(delay)
 
     def ingest_file(self, file_path: Path, source_name: str | None = None) -> int:
@@ -114,6 +129,7 @@ class RAGPipeline:
         if not chunks:
             return 0
 
+        logger.info("Ingesting %s: %d chunks to embed", source_name, len(chunks))
         embeddings = self._embed(chunks)
         ids = [f"{source_name}-{uuid.uuid4().hex[:8]}-{i}" for i in range(len(chunks))]
         metadatas = [{"source": source_name, "chunk_index": i} for i in range(len(chunks))]
@@ -153,7 +169,13 @@ class RAGPipeline:
             response = self.genai_client.models.generate_content(
                 model=settings.gemini_chat_model,
                 contents=user_content,
-                config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    # No tools are passed, so AFC is unused; disabling it silences the SDK warning
+                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
+                ),
             )
             return response.text or ""
 
