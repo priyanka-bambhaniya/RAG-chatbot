@@ -16,13 +16,26 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_chat_model: str = "gemini-3.6-flash"
     gemini_embedding_model: str = "gemini-embedding-001"
+    # Comma-separated chat models to try when the main one is overloaded (503) or rate-limited (429)
+    gemini_fallback_models: str = ""
+    chat_retries_per_model: int = 2
+
+    # "local" runs a small embedding model on this machine: free, no quota, no API key.
+    # "openai" / "gemini" use the provider's embedding model. Changing it needs a re-ingest.
+    embedding_provider: str = "local"
+    local_embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # Kept out of %TEMP%, which Windows may clean, so the ~70MB model downloads only once
+    local_model_cache_dir: str = str(ROOT_DIR / "backend" / "model_cache")
 
     chroma_persist_dir: str = str(ROOT_DIR / "backend" / "chroma_data")
     chroma_collection_name: str = "documents"
 
-    chunk_size: int = 1000
+    chunk_size: int = 1200
     chunk_overlap: int = 150
-    retrieval_top_k: int = 4
+    retrieval_top_k: int = 8
+    # A matched table row pulls in its whole table (up to this size) for cross-row questions
+    max_expanded_tables: int = 2
+    max_table_chars: int = 12000
 
     # Gemini free tier rate-limits embeddings per minute; keep batches small and retry on 429
     embed_batch_size: int = 50

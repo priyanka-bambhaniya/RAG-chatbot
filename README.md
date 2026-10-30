@@ -36,17 +36,25 @@ rag-production-system/
 
 ## Run
 
+> **Activate the venv in every new terminal first.** Otherwise the global Python is used and imports fail (e.g. `No module named 'rank_bm25'`). Your prompt shows `(venv)` when it's active. The commands below are for PowerShell; in Command Prompt (cmd) use `venv\Scripts\activate.bat` instead.
+
 Start the backend (from the `backend` directory, so the `app` package resolves):
 ```powershell
+cd D:\learning\rag-chatbot\RAG-chatbot
+.\venv\Scripts\Activate.ps1
 cd backend
 uvicorn app.main:app --reload --port 8000
 ```
 
 In a second terminal, start the frontend:
 ```powershell
+cd D:\learning\rag-chatbot\RAG-chatbot
+.\venv\Scripts\Activate.ps1
 cd frontend
 streamlit run ui.py
 ```
+
+See [COMMANDS.md](COMMANDS.md) for a quick command cheat sheet.
 
 Open the Streamlit URL, upload PDF/TXT/DOCX files in the sidebar to ingest them, then ask questions in the chat box.
 

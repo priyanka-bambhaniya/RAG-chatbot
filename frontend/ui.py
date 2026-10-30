@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -15,6 +16,23 @@ st.title("RAG Chatbot")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+
+@st.dialog("Remove document")
+def confirm_remove(filename: str) -> None:
+    st.markdown(f"Remove **{filename}**? You can ingest it again later.")
+    cancel_col, remove_col = st.columns(2)
+    if cancel_col.button("Cancel", use_container_width=True):
+        st.rerun()
+    if remove_col.button("Yes, remove", type="primary", use_container_width=True):
+        try:
+            response = requests.delete(f"{BACKEND_URL}/documents/{quote(filename, safe='')}", timeout=30)
+        except requests.RequestException as exc:
+            st.error(f"Failed to remove {filename}: {exc}")
+            return
+        if response.ok:
+            st.rerun()
+        st.error(f"Failed to remove {filename}: {response.text}")
 
 with st.sidebar:
     st.header("Ingest documents")
@@ -46,6 +64,23 @@ with st.sidebar:
                 except requests.RequestException as exc:
                     st.error(f"Failed to ingest {uploaded_file.name}: {exc}")
 
+    # Ingested files live in the backend's vector store, so list them from there: the
+    # uploader and success messages above reset on every rerun, but the documents stay
+    st.subheader("Ingested documents")
+    try:
+        docs = requests.get(f"{BACKEND_URL}/documents", timeout=10).json().get("documents", [])
+        if docs:
+            for doc in docs:
+                name_col, remove_col = st.columns([5, 1], vertical_alignment="center")
+                name_col.markdown(f"- {doc['filename']} ({doc['chunks']} chunks)")
+                # The ✕ only opens a confirmation, so a stray click can't drop a document
+                if remove_col.button("✕", key=f"remove-{doc['filename']}", help="Remove this document"):
+                    confirm_remove(doc["filename"])
+        else:
+            st.caption("None yet. Upload a file and click Ingest.")
+    except requests.RequestException:
+        st.caption("Backend not reachable.")
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -61,11 +96,15 @@ if question := st.chat_input("Ask a question about your documents"):
                 response = requests.post(
                     f"{BACKEND_URL}/query", json={"question": question}, timeout=120
                 )
-                response.raise_for_status()
-                data = response.json()
-                answer = data["answer"]
-                if data.get("sources"):
-                    answer += "\n\n**Sources:** " + ", ".join(data["sources"])
+                if response.ok:
+                    data = response.json()
+                    answer = data["answer"]
+                    if data.get("sources"):
+                        answer += "\n\n**Sources:** " + ", ".join(data["sources"])
+                elif response.headers.get("content-type", "").startswith("application/json"):
+                    answer = f"Error: {response.json().get('detail', response.text)}"
+                else:
+                    answer = f"Error: {response.status_code} {response.text}"
             except requests.RequestException as exc:
                 answer = f"Error contacting backend: {exc}"
             st.markdown(answer)

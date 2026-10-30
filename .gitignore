@@ -4,3 +4,5 @@ __pycache__/
 venv/
 .venv/
 backend/chroma_data/
+backend/model_cache/
+docs/

@@ -31,6 +31,21 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/documents")
+def documents() -> dict:
+    """Files already in the vector store; they persist across restarts."""
+    return {"documents": [{"filename": name, "chunks": n} for name, n in pipeline.list_documents().items()]}
+
+
+@app.delete("/documents/{filename}")
+def delete_document(filename: str) -> dict:
+    """Drop a file from the vector store; it can be ingested again later."""
+    removed = pipeline.delete_document(filename)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
+    return {"filename": filename, "chunks_removed": removed}
+
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(file: UploadFile) -> IngestResponse:
     suffix = Path(file.filename or "").suffix.lower()
@@ -64,5 +79,9 @@ def query(request: QueryRequest) -> QueryResponse:
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question must not be empty")
 
-    result = pipeline.query(request.question, top_k=request.top_k)
+    try:
+        result = pipeline.query(request.question, top_k=request.top_k)
+    except Exception as exc:
+        # e.g. the chat model is overloaded (503) or out of quota (429)
+        raise HTTPException(status_code=502, detail=f"Query failed: {exc}") from exc
     return QueryResponse(answer=result["answer"], sources=result["sources"])
