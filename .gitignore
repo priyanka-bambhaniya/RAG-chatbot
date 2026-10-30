@@ -6,3 +6,4 @@ venv/
 backend/chroma_data/
 backend/model_cache/
 docs/
+backend/vision_cache/

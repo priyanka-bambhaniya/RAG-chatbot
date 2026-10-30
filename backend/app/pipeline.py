@@ -10,10 +10,13 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from openai import OpenAI
+import pymupdf
+from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 
 from app.config import settings
 from app.pdf_layout import Segment, parse_pdf
+from app.pdf_vision import read_pages, to_segments, visual_pages
 
 SYSTEM_PROMPT = """You answer questions about the user's uploaded documents using only the numbered context excerpts.
 
@@ -23,7 +26,7 @@ Rules:
 - In forecast tables "e" means estimate and "f" means forecast (2026f = forecast for 2026). Values under a heading like "Percentage-point differences from January 2026 projections" are revisions to an earlier forecast, not growth rates. ".." means not available.
 - Apply notes attached to a row, such as figures reported on a fiscal-year basis.
 - When excerpts state the same figure with different precision, give the most specific one.
-- Figure excerpts carry a chart's title, summary, panel titles and notes, but not the plotted values; don't infer values from them.
+- Figure excerpts describe charts, diagrams and images. Use the values they state; never infer values a figure excerpt does not state.
 - Cite each fact as (filename, p. N), adding the table, figure or box name when the excerpt has one."""
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".docx"}
@@ -253,7 +256,7 @@ class RAGPipeline:
     def ingest_file(self, file_path: Path, source_name: str | None = None) -> int:
         source_name = source_name or file_path.name
         if file_path.suffix.lower() == ".pdf":
-            segments = parse_pdf(file_path)
+            segments = self._read_pdf(file_path)
         else:
             text = extract_text(file_path)
             segments = [
@@ -285,6 +288,43 @@ class RAGPipeline:
             )
         self._bm25 = None
         return len(chunks)
+
+    def _read_pdf(self, file_path: Path) -> list[Segment]:
+        """Layout parser for every page, replaced by the vision model's reading on visual pages."""
+        segments = parse_pdf(file_path)
+        mode = settings.pdf_vision.lower()
+        if mode == "off":
+            return segments
+        if self.provider != "gemini":
+            logger.info("PDF_VISION needs LLM_PROVIDER=gemini; using text extraction only")
+            return segments
+
+        if mode == "all":
+            with pymupdf.open(str(file_path)) as doc:
+                pages = list(range(1, doc.page_count + 1))
+        else:
+            pages = visual_pages(file_path)
+        if len(pages) > settings.pdf_vision_max_pages:
+            logger.warning(
+                "%d visual pages; reading the first %d (raise PDF_VISION_MAX_PAGES for more)",
+                len(pages), settings.pdf_vision_max_pages,
+            )
+            pages = pages[: settings.pdf_vision_max_pages]
+        if not pages:
+            return segments
+
+        logger.info("Reading %d visual pages of %s with %s", len(pages), file_path.name, settings.gemini_chat_model)
+        read = read_pages(
+            file_path, pages, self._gemini_structured, Path(settings.pdf_vision_cache_dir),
+            settings.pdf_vision_dpi, settings.pdf_vision_workers,
+        )
+        # Titled tables the parser already split into labelled rows are kept as they are
+        parsed_tables = {s.page_start for s in segments if s.kind == "table"}
+        # Prose spanning two pages is kept too: dropping it would lose the half on the other page
+        kept = [s for s in segments if not (s.page_start == s.page_end and s.page_start in read and s.kind != "table")]
+        for page, content in sorted(read.items()):
+            kept.extend(to_segments(page, content, skip_tables=page in parsed_tables))
+        return kept
 
     def list_documents(self) -> dict[str, int]:
         """Ingested files and their chunk counts."""
@@ -436,25 +476,41 @@ class RAGPipeline:
         return response.choices[0].message.content or ""
 
     def _gemini_generate(self, user_content: str) -> str:
-        """Try the main chat model, then each fallback, retrying briefly on overload or rate limits."""
-        fallbacks = [m.strip() for m in settings.gemini_fallback_models.split(",") if m.strip()]
-        models = [settings.gemini_chat_model] + [m for m in fallbacks if m != settings.gemini_chat_model]
         config = genai_types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             temperature=0.2,
             # No tools are passed, so AFC is unused; disabling it silences the SDK warning
             automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
         )
+        return self._gemini_call(user_content, config).text or ""
+
+    def _gemini_structured(self, contents: list, schema: type[BaseModel]) -> BaseModel:
+        """JSON output matching a Pydantic schema; used to read PDF page images."""
+        config = genai_types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=schema,
+            automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        response = self._gemini_call(contents, config)
+        if response.parsed is None:
+            raise ValueError("model returned no parsable JSON")
+        return response.parsed
+
+    def _gemini_call(self, contents, config: genai_types.GenerateContentConfig):
+        """Try the main chat model, then each fallback, retrying briefly on overload or rate limits."""
+        fallbacks = [m.strip() for m in settings.gemini_fallback_models.split(",") if m.strip()]
+        models = [settings.gemini_chat_model] + [m for m in fallbacks if m != settings.gemini_chat_model]
         last_error: Exception | None = None
         for model in models:
             for attempt in range(settings.chat_retries_per_model):
                 try:
                     response = self.genai_client.models.generate_content(
-                        model=model, contents=user_content, config=config
+                        model=model, contents=contents, config=config
                     )
                     if model != settings.gemini_chat_model:
                         logger.info("Answered with fallback model %s", model)
-                    return response.text or ""
+                    return response
                 except genai_errors.APIError as exc:
                     if exc.code not in (429, 500, 503, 504):
                         raise
