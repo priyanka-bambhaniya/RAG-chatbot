@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # Longer suggested waits mean a daily quota hit, not a per-minute one: fail instead of sleeping
     embed_max_retry_wait: int = 120
 
+    # Visually complex PDF pages (charts, card layouts, untitled tables, images) are read by
+    # the Gemini chat model from a page image: "auto" does only those pages, "all" every
+    # page, "off" none. Results are cached, so re-ingesting the same file costs nothing.
+    pdf_vision: str = "auto"
+    pdf_vision_max_pages: int = 100
+    # Parallel page reads; more than 2 hits the Gemini free tier's per-minute limit
+    pdf_vision_workers: int = 2
+    pdf_vision_dpi: int = 150
+    pdf_vision_cache_dir: str = str(ROOT_DIR / "backend" / "vision_cache")
+
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 

@@ -62,4 +62,5 @@ Open the Streamlit URL, upload PDF/TXT/DOCX files in the sidebar to ingest them,
 
 - Vector data persists on disk under `backend/chroma_data/` (gitignored).
 - Supported document types: `.pdf`, `.txt`, `.docx`.
+- PDF pages with charts, images, card layouts or untitled tables are read by Gemini from a page image (`LLM_PROVIDER=gemini` only). Set `PDF_VISION` in `.env` to `auto` (default, visual pages only), `all` or `off`. Readings are cached in `backend/vision_cache/`, so re-ingesting the same file makes no API calls.
 - Tune chunking/retrieval behavior via `.env` (`CHUNK_SIZE`, `CHUNK_OVERLAP`, `RETRIEVAL_TOP_K`) or the model names (`OPENAI_CHAT_MODEL`, `OPENAI_EMBEDDING_MODEL`).
