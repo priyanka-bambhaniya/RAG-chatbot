@@ -4,3 +4,9 @@ toolbarMode = "viewer"
 [server]
 # Max upload size per file, in MB (Streamlit default is 200)
 maxUploadSize = 1024
+
+# No "base" here, so the app follows the system light/dark setting; ui.py's styles
+# use translucent colors that read well on both
+[theme]
+primaryColor = "#2563EB"
+font = "sans serif"
